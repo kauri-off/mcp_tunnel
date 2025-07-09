@@ -1,0 +1,12 @@
+[package]
+name = "minecraft_protocol_derive"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = "2"        # для парсинга токенов
+quote = "1"      # для генерации кода
+proc-macro2 = "1"

@@ -1,0 +1,13 @@
+[package]
+name = "minecraft_protocol"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+aes = "0.8.4"
+cfb8 = "0.8.1"
+cipher = "0.4.4"
+rand = "0.9.1"
+rsa = "0.9.8"
+thiserror = "2.0.12"
+tokio = { version = "1.46.1", features = ["full"] }

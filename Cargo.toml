@@ -1,0 +1,11 @@
+[package]
+name = "mcp_tunnel"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+thiserror = "2.0.12"
+tokio = { version = "1.46.1", features = ["full"] }
+minecraft_protocol_derive = { path = "./minecraft_protocol_derive" }
+minecraft_protocol = { path = "./minecraft_protocol" }
+serde_json = "1.0.140"
