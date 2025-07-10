@@ -1,0 +1,11 @@
+[package]
+name = "packet_logger"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.98"
+chrono = "0.4.41"
+hex = "0.4.3"
+minecraft_protocol = {path = "../minecraft_protocol"}
+tokio = { version = "1.46.1", features = ["full"] }

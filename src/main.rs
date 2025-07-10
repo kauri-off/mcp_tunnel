@@ -1,65 +1,38 @@
-use std::io::Cursor;
+use clap::Parser;
 
-use minecraft_protocol::packet::PacketIO;
-use minecraft_protocol::{packet::RawPacket, varint::VarInt};
+use crate::{cli::Cli, temp_server::setup_temp_server};
 
-use serde_json::Value;
-use tokio::net::TcpSocket;
-
-use crate::packets::{Handshake, StatusRequest, StatusResponse};
-
+mod cli;
 mod packets;
+mod temp_server;
 
 #[tokio::main]
 async fn main() {
-    let mut conn = TcpSocket::new_v4()
-        .unwrap()
-        .connect("127.0.0.1:25565".parse().unwrap())
-        .await
-        .unwrap();
+    let cli = Cli::parse();
 
-    let handshake = Handshake {
-        protocol_version: VarInt(767),
-        server_address: "127.0.0.1".to_string(),
-        server_port: 25565,
-        intent: VarInt(1),
-    };
-
-    RawPacket::from_packetio(&handshake)
-        .unwrap()
-        .write(&mut conn)
-        .await
-        .unwrap();
-
-    RawPacket::from_packetio(&StatusRequest {})
-        .unwrap()
-        .write(&mut conn)
-        .await
-        .unwrap();
-
-    let status_response = RawPacket::read(&mut conn)
-        .await
-        .unwrap()
-        .as_unencrypted()
-        .unwrap();
-
-    let status_packet = StatusResponse::read(&mut Cursor::new(&status_response.payload)).unwrap();
-
-    let value: Value = serde_json::from_str(&status_packet.response).unwrap();
-    dbg!(&value);
+    match cli {
+        Cli::TempServer { ip } => setup_temp_server(&ip).await,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use minecraft_protocol::{
-        packet::{Packet, PacketError},
-        varint::VarIntError,
+        encrypted_stream::EncryptedStream,
+        packet::{PacketError, PacketIO, RawPacket, UncompressedPacket},
+        varint::{VarInt, VarIntError},
     };
+    use openssl::symm::{Cipher, Crypter, Mode};
     use tokio::io::BufReader;
 
-    use super::*;
-    use crate::packets::{Handshake, StatusResponse};
+    use crate::packets::p767::{
+        c2s::{self, Handshake},
+        s2c::{self, StatusResponse},
+    };
+    use serde_json::Value;
     use std::io::{self, Cursor};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     #[test]
     fn test_packet_serialization_deserialization() {
@@ -74,7 +47,7 @@ mod tests {
         let mut buf = Vec::new();
         handshake.write(&mut buf).unwrap();
         let mut cursor = Cursor::new(buf);
-        let packet_id = VarInt::read_sync(&mut cursor).unwrap();
+        let _packet_id = VarInt::read_sync(&mut cursor).unwrap();
         let decoded = Handshake::read(&mut cursor).unwrap();
 
         assert_eq!(decoded.protocol_version, handshake.protocol_version);
@@ -89,7 +62,7 @@ mod tests {
         status.write(&mut buf).unwrap();
 
         let mut cursor = Cursor::new(&buf);
-        let packet_id = VarInt::read_sync(&mut cursor).unwrap();
+        let _packet_id = VarInt::read_sync(&mut cursor).unwrap();
         let decoded = StatusResponse::read(&mut cursor).unwrap();
 
         assert_eq!(decoded.response, status.response);
@@ -97,7 +70,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_raw_packet_conversion() {
-        let packet = Packet {
+        let packet = UncompressedPacket {
             packet_id: VarInt(0x42),
             payload: vec![1, 2, 3, 4, 5],
         };
@@ -108,40 +81,15 @@ mod tests {
         assert_eq!(&raw.data[1..], [1, 2, 3, 4, 5]);
 
         // RawPacket → Packet
-        let converted = raw.as_unencrypted().unwrap();
+        let converted = raw.as_uncompressed().unwrap();
         assert_eq!(converted.packet_id, packet.packet_id);
         assert_eq!(converted.payload, packet.payload);
-    }
-
-    #[test]
-    fn test_encryption_decryption() {
-        let shared_secret = [0u8; 16];
-        let original = Packet {
-            packet_id: VarInt(0x00),
-            payload: b"test payload".to_vec(),
-        };
-
-        // Шифрование
-        let encrypted = original.encrypt(&shared_secret).unwrap();
-        assert_ne!(encrypted.encrypted_data, original.payload);
-
-        // Дешифрование
-        let decrypted = encrypted.decrypt(&shared_secret).unwrap();
-        assert_eq!(decrypted.packet_id, original.packet_id);
-        assert_eq!(decrypted.payload, original.payload);
-
-        // Неверный ключ
-        // let wrong_key = [2u8; 16];
-        // match encrypted.decrypt(&wrong_key) {
-        //     Err(PacketError::DecryptionError) => (), // Ожидаемая ошибка
-        //     other => panic!("Unexpected result: {:?}", other),
-        // }
     }
 
     #[tokio::test]
     async fn test_async_read_write() {
         let mut buffer = Vec::new();
-        let mut original = RawPacket {
+        let original = RawPacket {
             data: vec![0x01, 0x02, 0x03, 0x04],
         };
 
@@ -179,7 +127,7 @@ mod tests {
         let received = RawPacket::read(&mut server)
             .await
             .unwrap()
-            .as_unencrypted()
+            .as_uncompressed()
             .unwrap();
 
         // Проверка содержимого
@@ -195,7 +143,7 @@ mod tests {
 
         // Тест 2: Неполный VarInt внутри пакета
         let invalid_raw = RawPacket { data: vec![0xFF] }; // Неполный VarInt
-        let result = invalid_raw.as_unencrypted();
+        let result = invalid_raw.as_uncompressed();
 
         // Проверяем конкретный тип ошибки
         match result {
@@ -207,7 +155,7 @@ mod tests {
 
         // Тест 3: Пустой пакет
         let empty = RawPacket { data: vec![] };
-        let result = empty.as_unencrypted();
+        let result = empty.as_uncompressed();
         match result {
             Err(PacketError::VarIntError(VarIntError::IOError(e))) => {
                 assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
@@ -385,5 +333,179 @@ mod tests {
             }
             other => panic!("Unexpected result: {:?}", other),
         }
+    }
+
+    const SHARED_SECRET: &'static [u8; 16] = &[0x42; 16];
+
+    #[tokio::test]
+    async fn test_small_data() {
+        let (client, server) = tokio::io::duplex(1024);
+
+        let mut client_stream = EncryptedStream::new(client, SHARED_SECRET).unwrap();
+        let mut server_stream = EncryptedStream::new(server, SHARED_SECRET).unwrap();
+
+        let data = b"Hello";
+        client_stream.write_all(data).await.unwrap();
+        client_stream.flush().await.unwrap();
+
+        let mut buf = [0u8; 5];
+        server_stream.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, data);
+    }
+
+    #[tokio::test]
+    async fn test_large_data() {
+        let (client, server) = tokio::io::duplex(4096);
+
+        let mut client_stream = EncryptedStream::new(client, SHARED_SECRET).unwrap();
+        let mut server_stream = EncryptedStream::new(server, SHARED_SECRET).unwrap();
+
+        // Generate 2048 bytes of data
+        let data: Vec<u8> = (0..2048).map(|i| (i % 256) as u8).collect();
+        client_stream.write_all(&data).await.unwrap();
+        client_stream.flush().await.unwrap();
+
+        let mut buf = vec![0u8; 2048];
+        server_stream.read_exact(&mut buf).await.unwrap();
+        assert_eq!(buf, data);
+    }
+
+    #[tokio::test]
+    async fn test_multiple_writes() {
+        let (client, server) = tokio::io::duplex(1024);
+
+        let mut client_stream = EncryptedStream::new(client, SHARED_SECRET).unwrap();
+        let mut server_stream = EncryptedStream::new(server, SHARED_SECRET).unwrap();
+
+        let data1 = b"Hello";
+        let data2 = b", world!";
+        client_stream.write_all(data1).await.unwrap();
+        client_stream.write_all(data2).await.unwrap();
+        client_stream.flush().await.unwrap();
+
+        let mut buf = [0u8; 13];
+        server_stream.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"Hello, world!");
+    }
+
+    #[tokio::test]
+    async fn test_full_minecraft_flow() {
+        // Start test server
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut stream = EncryptedStream::new(socket, SHARED_SECRET).unwrap();
+
+            // Read handshake
+            let handshake: c2s::Handshake = RawPacket::read(&mut stream)
+                .await
+                .unwrap()
+                .as_uncompressed()
+                .unwrap()
+                .convert()
+                .unwrap();
+
+            assert_eq!(handshake.protocol_version, VarInt(767));
+            assert_eq!(handshake.server_address, "127.0.0.1");
+            assert_eq!(handshake.server_port, 25565);
+            assert_eq!(handshake.intent, VarInt(1));
+
+            // Read status request
+            let _: c2s::StatusRequest = RawPacket::read(&mut stream)
+                .await
+                .unwrap()
+                .as_uncompressed()
+                .unwrap()
+                .convert()
+                .unwrap();
+
+            // Send status response
+            let response = s2c::StatusResponse {
+                response: r#"{"version":{"name":"1.20.1","protocol":757},"players":{"max":20,"online":0}}"#.to_string(),
+            };
+            RawPacket::from_packetio(&response)
+                .unwrap()
+                .write(&mut stream)
+                .await
+                .unwrap();
+        });
+
+        // Run client
+        let client = tokio::spawn(async move {
+            let socket = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let mut stream = EncryptedStream::new(socket, SHARED_SECRET).unwrap();
+
+            // Send handshake
+            let handshake = c2s::Handshake {
+                protocol_version: VarInt(767),
+                server_address: "127.0.0.1".to_string(),
+                server_port: 25565,
+                intent: VarInt(1),
+            };
+            RawPacket::from_packetio(&handshake)
+                .unwrap()
+                .write(&mut stream)
+                .await
+                .unwrap();
+
+            // Send status request
+            RawPacket::from_packetio(&c2s::StatusRequest {})
+                .unwrap()
+                .write(&mut stream)
+                .await
+                .unwrap();
+
+            // Read status response
+            let status_response: s2c::StatusResponse = RawPacket::read(&mut stream)
+                .await
+                .unwrap()
+                .as_uncompressed()
+                .unwrap()
+                .convert()
+                .unwrap();
+
+            // Parse and verify response
+            let value: Value = serde_json::from_str(&status_response.response).unwrap();
+            assert_eq!(value["version"]["name"], "1.20.1");
+            assert_eq!(value["version"]["protocol"], 757);
+            assert_eq!(value["players"]["max"], 20);
+            assert_eq!(value["players"]["online"], 0);
+        });
+
+        // Wait for both to complete
+        tokio::try_join!(server, client).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_encryption_roundtrip() {
+        let data = b"Test data for encryption roundtrip";
+        let key = [0x56; 16];
+        let iv = [0x78; 16];
+
+        // Encrypt
+        let mut encrypted = data.to_vec();
+        {
+            let cipher = Cipher::aes_128_cfb8();
+            let mut encrypter = Crypter::new(cipher, Mode::Encrypt, &key, Some(&iv)).unwrap();
+            encrypter.pad(false);
+            let mut out = vec![0; encrypted.len() + cipher.block_size()];
+            let count = encrypter.update(&encrypted, &mut out).unwrap();
+            encrypted = out[..count].to_vec();
+        }
+
+        // Decrypt
+        let mut decrypted = encrypted.clone();
+        {
+            let cipher = Cipher::aes_128_cfb8();
+            let mut decrypter = Crypter::new(cipher, Mode::Decrypt, &key, Some(&iv)).unwrap();
+            decrypter.pad(false);
+            let mut out = vec![0; decrypted.len() + cipher.block_size()];
+            let count = decrypter.update(&decrypted, &mut out).unwrap();
+            decrypted = out[..count].to_vec();
+        }
+
+        assert_eq!(decrypted, data);
     }
 }
