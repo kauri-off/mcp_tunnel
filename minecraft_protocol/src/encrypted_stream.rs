@@ -11,8 +11,8 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    read_stream: EncryptedReadStream<R>,
-    write_stream: EncryptedWriteStream<W>,
+    pub read_stream: EncryptedReadStream<R>,
+    pub write_stream: EncryptedWriteStream<W>,
 }
 
 pub struct EncryptedReadStream<R>
@@ -122,19 +122,6 @@ where
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        self.my_poll_read(cx, buf)
-    }
-}
-
-impl<R> EncryptedReadStream<R>
-where
-    R: AsyncRead + Unpin,
-{
-    fn my_poll_read(
-        &mut self,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
         let pre_len = buf.filled().len();
         let poll = Pin::new(&mut self.read_half).poll_read(cx, buf);
 
@@ -160,30 +147,6 @@ where
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
-        self.my_poll_write(cx, buf)
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
-        self.my_poll_flush(cx)
-    }
-
-    fn poll_shutdown(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), io::Error>> {
-        self.my_poll_shutdown(cx)
-    }
-}
-
-impl<W> EncryptedWriteStream<W>
-where
-    W: AsyncWrite + Unpin,
-{
-    fn my_poll_write(
-        &mut self,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<Result<usize, io::Error>> {
         let mut encrypted = vec![0; buf.len() + 16];
         let count = self
             .encrypter
@@ -194,11 +157,14 @@ where
         Pin::new(&mut self.write_half).poll_write(cx, &encrypted)
     }
 
-    fn my_poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
         Pin::new(&mut self.write_half).poll_flush(cx)
     }
 
-    fn my_poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), io::Error>> {
         Pin::new(&mut self.write_half).poll_shutdown(cx)
     }
 }
@@ -213,7 +179,7 @@ where
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        self.read_stream.my_poll_read(cx, buf)
+        AsyncRead::poll_read(Pin::new(&mut self.read_stream), cx, buf)
     }
 }
 
@@ -227,17 +193,17 @@ where
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
-        self.write_stream.my_poll_write(cx, buf)
+        AsyncWrite::poll_write(Pin::new(&mut self.write_stream), cx, buf)
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
-        self.write_stream.my_poll_flush(cx)
+        AsyncWrite::poll_flush(Pin::new(&mut self.write_stream), cx)
     }
 
     fn poll_shutdown(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), io::Error>> {
-        self.write_stream.my_poll_shutdown(cx)
+        AsyncWrite::poll_shutdown(Pin::new(&mut self.write_stream), cx)
     }
 }
