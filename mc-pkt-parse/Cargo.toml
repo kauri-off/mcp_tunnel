@@ -1,8 +1,0 @@
-[package]
-name = "mc-pkt-parse"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-hex = "0.4.3"
-minecraft_protocol = { path = "../minecraft_protocol" }

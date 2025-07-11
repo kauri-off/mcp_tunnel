@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use minecraft_protocol::encrypted_stream::EncryptedStream;
+use minecraft_protocol::cfb8_stream::CFB8Stream;
 use minecraft_protocol::packet::RawPacket;
 use rsa::pkcs8::EncodePublicKey;
 use rsa::{rand_core::OsRng, RsaPrivateKey, RsaPublicKey};
@@ -203,7 +203,7 @@ async fn process_login(mut stream: TcpStream, addr: SocketAddr, private_key: Rsa
         .try_into()
         .expect("Vec length is not 16");
 
-    let mut encrypted_stream = EncryptedStream::new_from_tcp(stream, shared_secret).unwrap();
+    let mut encrypted_stream = CFB8Stream::new_from_tcp(stream, shared_secret).unwrap();
     log_info!("Encrypted stream established with {}", addr);
 
     // Disconnect player

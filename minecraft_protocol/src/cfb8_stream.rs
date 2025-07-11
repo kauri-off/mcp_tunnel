@@ -6,84 +6,72 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
-pub struct EncryptedStream<R, W>
-where
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
-{
-    pub read_stream: EncryptedReadStream<R>,
-    pub write_stream: EncryptedWriteStream<W>,
+pub struct CFB8Stream<R, W> {
+    pub read_stream: CFB8ReadHalf<R>,
+    pub write_stream: CFB8WriteHalf<W>,
 }
 
-pub struct EncryptedReadStream<R>
-where
-    R: AsyncRead + Unpin,
-{
+pub struct CFB8ReadHalf<R> {
     read_half: R,
     decrypter: Crypter,
 }
 
-pub struct EncryptedWriteStream<W>
-where
-    W: AsyncWrite + Unpin,
-{
+pub struct CFB8WriteHalf<W> {
     write_half: W,
     encrypter: Crypter,
 }
 
-impl<W> EncryptedWriteStream<W>
-where
-    W: AsyncWrite + Unpin,
-{
+impl<W> CFB8WriteHalf<W> {
     pub fn new(write_half: W, key: &[u8; 16]) -> io::Result<Self> {
-        let encrypter = get_encrypter(key)?;
+        let encrypter = Self::get_encrypter(key)?;
 
         Ok(Self {
             write_half,
             encrypter,
         })
     }
+
+    fn get_encrypter(key: &[u8; 16]) -> io::Result<Crypter> {
+        let cipher = Cipher::aes_128_cfb8();
+
+        let mut encrypter = Crypter::new(cipher, Mode::Encrypt, key, Some(key))?;
+        encrypter.pad(false);
+        Ok(encrypter)
+    }
+
+    pub fn into_inner(self) -> W {
+        self.write_half
+    }
 }
 
-impl<R> EncryptedReadStream<R>
-where
-    R: AsyncRead + Unpin,
-{
+impl<R> CFB8ReadHalf<R> {
     pub fn new(read_half: R, key: &[u8; 16]) -> io::Result<Self> {
-        let decrypter = get_decrypter(key)?;
+        let decrypter = Self::get_decrypter(key)?;
 
         Ok(Self {
             read_half,
             decrypter,
         })
     }
+
+    fn get_decrypter(key: &[u8; 16]) -> io::Result<Crypter> {
+        let cipher = Cipher::aes_128_cfb8();
+
+        let mut decrypter = Crypter::new(cipher, Mode::Decrypt, key, Some(key))?;
+        decrypter.pad(false);
+        Ok(decrypter)
+    }
+
+    pub fn into_inner(self) -> R {
+        self.read_half
+    }
 }
 
-fn get_encrypter(key: &[u8; 16]) -> io::Result<Crypter> {
-    let cipher = Cipher::aes_128_cfb8();
-
-    let mut encrypter = Crypter::new(cipher, Mode::Encrypt, key, Some(key))?;
-    encrypter.pad(false);
-    Ok(encrypter)
-}
-
-fn get_decrypter(key: &[u8; 16]) -> io::Result<Crypter> {
-    let cipher = Cipher::aes_128_cfb8();
-
-    let mut decrypter = Crypter::new(cipher, Mode::Decrypt, key, Some(key))?;
-    decrypter.pad(false);
-    Ok(decrypter)
-}
-
-impl<R, W> EncryptedStream<R, W>
-where
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
-{
+impl<R, W> CFB8Stream<R, W> {
     pub fn new(read_half: R, write_half: W, key: &[u8; 16]) -> io::Result<Self> {
-        let read_stream = EncryptedReadStream::new(read_half, key)?;
+        let read_stream = CFB8ReadHalf::new(read_half, key)?;
 
-        let write_stream = EncryptedWriteStream::new(write_half, key)?;
+        let write_stream = CFB8WriteHalf::new(write_half, key)?;
 
         Ok(Self {
             read_stream,
@@ -91,29 +79,27 @@ where
         })
     }
 
-    pub fn change_key(&mut self, key: &[u8; 16]) -> io::Result<()> {
-        let encrypter = get_encrypter(key)?;
-        let decrypter = get_decrypter(key)?;
+    pub fn split(self) -> (CFB8ReadHalf<R>, CFB8WriteHalf<W>) {
+        (self.read_stream, self.write_stream)
+    }
 
-        self.read_stream.decrypter = decrypter;
-        self.write_stream.encrypter = encrypter;
-
-        Ok(())
+    pub fn split_inner(self) -> (R, W) {
+        (self.read_stream.read_half, self.write_stream.write_half)
     }
 }
 
-impl EncryptedStream<OwnedReadHalf, OwnedWriteHalf> {
+impl CFB8Stream<OwnedReadHalf, OwnedWriteHalf> {
     pub fn new_from_tcp(
         stream: TcpStream,
         key: &[u8; 16],
-    ) -> io::Result<EncryptedStream<OwnedReadHalf, OwnedWriteHalf>> {
+    ) -> io::Result<CFB8Stream<OwnedReadHalf, OwnedWriteHalf>> {
         let (read_half, write_half) = stream.into_split();
 
-        EncryptedStream::new(read_half, write_half, key)
+        CFB8Stream::new(read_half, write_half, key)
     }
 }
 
-impl<R> AsyncRead for EncryptedReadStream<R>
+impl<R> AsyncRead for CFB8ReadHalf<R>
 where
     R: AsyncRead + Unpin,
 {
@@ -138,7 +124,7 @@ where
     }
 }
 
-impl<W> AsyncWrite for EncryptedWriteStream<W>
+impl<W> AsyncWrite for CFB8WriteHalf<W>
 where
     W: AsyncWrite + Unpin,
 {
@@ -169,7 +155,7 @@ where
     }
 }
 
-impl<R, W> AsyncRead for EncryptedStream<R, W>
+impl<R, W> AsyncRead for CFB8Stream<R, W>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -183,7 +169,7 @@ where
     }
 }
 
-impl<R, W> AsyncWrite for EncryptedStream<R, W>
+impl<R, W> AsyncWrite for CFB8Stream<R, W>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,

@@ -40,10 +40,6 @@ pub mod p767 {
             pub shared_secret: Vec<u8>,
             pub verify_token: Vec<u8>,
         }
-
-        #[derive(Packet)]
-        #[packet(0x03)]
-        pub struct LoginAcknowledged {}
     }
 
     pub mod s2c {
@@ -63,7 +59,7 @@ pub mod p767 {
         }
 
         // ----------- LOGIN -----------
-        #[derive(Packet)]
+        #[derive(Packet, Debug)]
         #[packet(0x00)]
         pub struct LoginDisconnect {
             pub reason: String,
@@ -78,11 +74,11 @@ pub mod p767 {
             pub should_authenticate: bool,
         }
 
-        #[derive(Packet)]
-        #[packet(0x02)]
-        pub struct LoginSuccess {
-            pub uuid: u128,
-            pub username: String,
+        #[derive(Packet, Debug)]
+        #[packet(0x05)]
+        pub struct ChangeProtocol {
+            pub key: Vec<u8>,
+            pub nonce: Vec<u8>,
         }
     }
 }
