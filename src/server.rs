@@ -126,7 +126,7 @@ async fn process_login(
 
         RawPacket::from_packetio(&s2c::LoginDisconnect {
             reason: json!({
-                "text": "You are not whitelisted"
+                "text": "You are not white-listed on this server!"
             })
             .to_string(),
         })?
@@ -213,13 +213,10 @@ async fn process_status(mut stream: TcpStream, _addr: SocketAddr) -> anyhow::Res
                       "players": {
                         "max": 20,
                         "online": 0,
-                        "sample": []
                       },
-                      "description": {
-                        "text": "A Minecraft Server"
-                      },
-                    }
-                    )
+                      "description": "A Minecraft Server",
+                      "enforcesSecureChat": true
+                    })
                     .to_string(),
                 })?
                 .write(&mut stream)

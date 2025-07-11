@@ -97,18 +97,18 @@ async fn process_status(mut stream: TcpStream, protocol: i32) {
             RawPacket::from_packetio(&s2c::StatusResponse {
                 response: json!({
                   "version": {
-                    "name": "Mojang Private Build",
+                    "name": "1.21.1",
                     "protocol": 767
                   },
                   "players": {
                     "max": 20,
-                    "online": 2,
+                    "online": 1,
                     "sample": [
-                        {"name": "Notch", "id": "4ed1f46b-be04-bc75-6bcb-17c0c7ce3e46"},
-                        {"name": "jeb_", "id": "8362a4ff-bb3b-ecf6-f65e-2b3c17e3d7df"}
+                        {"name": "radioheadfan5679", "id": "50abe2eb-d25c-4563-975d-c359caff7740"}
                     ]
                   },
-                  "description": { "text": "§aMojang`s private server" }
+                  "description": "A Minecraft Server",
+                  "enforcesSecureChat": true
                 })
                 .to_string(),
             })
