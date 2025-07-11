@@ -1,24 +1,26 @@
 use clap::Parser;
 
-use crate::{cli::Cli, temp_server::setup_temp_server};
+use crate::{cli::Cli, honeypot::setup_honeypot, server::start_server};
 
 mod cli;
+mod honeypot;
 mod packets;
-mod temp_server;
+mod server;
 
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
 
     match cli {
-        Cli::TempServer { ip } => setup_temp_server(&ip).await,
+        Cli::Honeypot { ip } => setup_honeypot(&ip).await,
+        Cli::Server => start_server().await,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use minecraft_protocol::{
-        encrypted_stream::EncryptedStream,
+        encrypted_stream::{EncryptedReadStream, EncryptedStream, EncryptedWriteStream},
         packet::{PacketError, PacketIO, RawPacket, UncompressedPacket},
         varint::{VarInt, VarIntError},
     };
@@ -341,8 +343,8 @@ mod tests {
     async fn test_small_data() {
         let (client, server) = tokio::io::duplex(1024);
 
-        let mut client_stream = EncryptedStream::new(client, SHARED_SECRET).unwrap();
-        let mut server_stream = EncryptedStream::new(server, SHARED_SECRET).unwrap();
+        let mut client_stream = EncryptedWriteStream::new(client, SHARED_SECRET).unwrap();
+        let mut server_stream = EncryptedReadStream::new(server, SHARED_SECRET).unwrap();
 
         let data = b"Hello";
         client_stream.write_all(data).await.unwrap();
@@ -357,8 +359,8 @@ mod tests {
     async fn test_large_data() {
         let (client, server) = tokio::io::duplex(4096);
 
-        let mut client_stream = EncryptedStream::new(client, SHARED_SECRET).unwrap();
-        let mut server_stream = EncryptedStream::new(server, SHARED_SECRET).unwrap();
+        let mut client_stream = EncryptedWriteStream::new(client, SHARED_SECRET).unwrap();
+        let mut server_stream = EncryptedReadStream::new(server, SHARED_SECRET).unwrap();
 
         // Generate 2048 bytes of data
         let data: Vec<u8> = (0..2048).map(|i| (i % 256) as u8).collect();
@@ -374,8 +376,8 @@ mod tests {
     async fn test_multiple_writes() {
         let (client, server) = tokio::io::duplex(1024);
 
-        let mut client_stream = EncryptedStream::new(client, SHARED_SECRET).unwrap();
-        let mut server_stream = EncryptedStream::new(server, SHARED_SECRET).unwrap();
+        let mut client_stream = EncryptedWriteStream::new(client, SHARED_SECRET).unwrap();
+        let mut server_stream = EncryptedReadStream::new(server, SHARED_SECRET).unwrap();
 
         let data1 = b"Hello";
         let data2 = b", world!";
@@ -396,7 +398,8 @@ mod tests {
 
         let server = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
-            let mut stream = EncryptedStream::new(socket, SHARED_SECRET).unwrap();
+
+            let mut stream = EncryptedStream::new_from_tcp(socket, SHARED_SECRET).unwrap();
 
             // Read handshake
             let handshake: c2s::Handshake = RawPacket::read(&mut stream)
@@ -435,7 +438,8 @@ mod tests {
         // Run client
         let client = tokio::spawn(async move {
             let socket = tokio::net::TcpStream::connect(addr).await.unwrap();
-            let mut stream = EncryptedStream::new(socket, SHARED_SECRET).unwrap();
+
+            let mut stream = EncryptedStream::new_from_tcp(socket, SHARED_SECRET).unwrap();
 
             // Send handshake
             let handshake = c2s::Handshake {

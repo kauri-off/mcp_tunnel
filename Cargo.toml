@@ -13,3 +13,4 @@ rsa = "0.9.8"
 rand = "0.9.1"
 openssl = "0.10.73"
 clap = { version = "4.5.41", features = ["derive"] }
+anyhow = "1.0.98"

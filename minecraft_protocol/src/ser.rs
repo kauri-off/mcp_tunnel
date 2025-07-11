@@ -129,3 +129,11 @@ impl Deserialize for Vec<u8> {
         Ok(buf)
     }
 }
+
+impl Serialize for [u8] {
+    fn serialize<W: Write + Unpin>(&self, writer: &mut W) -> Result<(), SerializationError> {
+        VarInt(self.len() as i32).write_sync(writer)?;
+        writer.write_all(self)?;
+        Ok(())
+    }
+}

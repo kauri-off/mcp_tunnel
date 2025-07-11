@@ -34,11 +34,6 @@ pub struct UncompressedPacket {
 }
 
 #[derive(Debug, Clone)]
-pub struct CompressedPacket {
-    pub encrypted_data: Vec<u8>,
-}
-
-#[derive(Debug, Clone)]
 pub struct RawPacket {
     pub data: Vec<u8>,
 }
@@ -68,12 +63,6 @@ impl RawPacket {
         Ok(Self { data: buf })
     }
 
-    pub fn as_compressed(self) -> CompressedPacket {
-        CompressedPacket {
-            encrypted_data: self.data,
-        }
-    }
-
     pub fn as_uncompressed(self) -> Result<UncompressedPacket, PacketError> {
         let mut cursor = Cursor::new(self.data);
         let packet_id = VarInt::read_sync(&mut cursor)?;
@@ -94,13 +83,5 @@ impl UncompressedPacket {
 
     pub fn convert<T: PacketIO>(&self) -> Result<T, SerializationError> {
         T::read(&mut Cursor::new(&self.payload))
-    }
-}
-
-impl CompressedPacket {
-    pub fn to_raw_packet(&self) -> RawPacket {
-        RawPacket {
-            data: self.encrypted_data.clone(),
-        }
     }
 }
