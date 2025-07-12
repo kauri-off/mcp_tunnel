@@ -46,7 +46,6 @@ impl VarInt {
 
         loop {
             let mut buf = [0; 1];
-            // Исправляем: проверяем количество прочитанных байт
             if reader.read(&mut buf)? == 0 {
                 return Err(VarIntError::IOError(io::Error::new(
                     io::ErrorKind::UnexpectedEof,

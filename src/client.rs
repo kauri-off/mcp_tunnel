@@ -1,5 +1,6 @@
-use std::{fs, io::Write, net::SocketAddr, path::Path};
+use std::{net::SocketAddr, path::Path};
 
+use anyhow::anyhow;
 use async_encrypted_stream::{encrypted_stream, ReadHalf, WriteHalf};
 use chacha20poly1305::{
     aead::stream::{DecryptorLE31, EncryptorLE31},
@@ -7,16 +8,21 @@ use chacha20poly1305::{
 };
 use mcp_tunnel::fingerprint_md5;
 use minecraft_protocol::{cfb8_stream::CFB8Stream, packet::RawPacket, varint::VarInt};
+use once_cell::sync::Lazy;
 use rsa::{pkcs8::DecodePublicKey, rand_core::OsRng, RsaPublicKey};
 use sha1::{Digest, Sha1};
 use tokio::{
+    fs,
+    io::AsyncWriteExt,
     net::{TcpListener, TcpSocket, TcpStream},
     select,
+    sync::Mutex,
 };
 
 use crate::packets::p767::{c2s, s2c};
 
 const KNOWN_HOSTS_FILE: &str = "known_hosts";
+static KNOWN_HOSTS_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 pub async fn start_client(
     bind_addr: String,
@@ -78,10 +84,10 @@ async fn process_socket(
     let fingerprint = fingerprint_md5(&public_key)?;
 
     // Verify or record host key
-    match check_known_host(&server_addr, &fingerprint) {
+    match check_known_host(&server_addr, &fingerprint).await {
         Ok(_) => {} // Known host, proceed
         Err(_) if trust_new => {
-            add_known_host(&server_addr, &fingerprint)?;
+            add_known_host(&server_addr, &fingerprint).await?;
             println!("Added new host key for {}", server_addr);
         }
         Err(e) => {
@@ -169,13 +175,15 @@ fn get_known_hosts_path() -> String {
         .to_string()
 }
 
-fn check_known_host(server_addr: &str, fingerprint: &str) -> anyhow::Result<()> {
+pub async fn check_known_host(server_addr: &str, fingerprint: &str) -> anyhow::Result<()> {
+    let _lock = KNOWN_HOSTS_LOCK.lock().await;
+
     let path = get_known_hosts_path();
     if !Path::new(&path).exists() {
-        return Err(anyhow::anyhow!("Known hosts file not found"));
+        return Err(anyhow!("Known hosts file not found"));
     }
 
-    let contents = fs::read_to_string(&path)?;
+    let contents = fs::read_to_string(&path).await?;
     for line in contents.lines() {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() >= 2 && parts[0] == server_addr && parts[1] == fingerprint {
@@ -183,16 +191,20 @@ fn check_known_host(server_addr: &str, fingerprint: &str) -> anyhow::Result<()> 
         }
     }
 
-    Err(anyhow::anyhow!("Host key verification failed"))
+    Err(anyhow!("Host key verification failed"))
 }
 
-fn add_known_host(server_addr: &str, fingerprint: &str) -> anyhow::Result<()> {
+pub async fn add_known_host(server_addr: &str, fingerprint: &str) -> anyhow::Result<()> {
+    let _lock = KNOWN_HOSTS_LOCK.lock().await;
+
     let path = get_known_hosts_path();
     let mut file = fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(path)?;
+        .open(&path)
+        .await?;
 
-    writeln!(file, "{} {}", server_addr, fingerprint)?;
+    file.write_all(format!("{} {}\n", server_addr, fingerprint).as_bytes())
+        .await?;
     Ok(())
 }

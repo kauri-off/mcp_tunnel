@@ -72,11 +72,14 @@ pub async fn start_server(bind_addr: String, proxy_addr: String) {
 
     // Load or generate RSA key
     let private_key = match config.rsa_private_key {
-        Some(ref pem) => RsaPrivateKey::from_pkcs1_pem(pem).unwrap_or_else(|_| {
-            error!("Invalid RSA private key in config, generating new one");
-            generate_and_save_rsa_key(&mut config)
-        }),
-        None => generate_and_save_rsa_key(&mut config),
+        Some(ref pem) => match RsaPrivateKey::from_pkcs1_pem(pem) {
+            Ok(t) => t,
+            Err(_) => {
+                error!("Invalid RSA private key in config, generating new one");
+                generate_and_save_rsa_key(&mut config).await
+            }
+        },
+        None => generate_and_save_rsa_key(&mut config).await,
     };
 
     let public_key = RsaPublicKey::from(&private_key);
@@ -100,7 +103,7 @@ pub async fn start_server(bind_addr: String, proxy_addr: String) {
     }
 }
 
-fn generate_and_save_rsa_key(config: &mut Config) -> RsaPrivateKey {
+async fn generate_and_save_rsa_key(config: &mut Config) -> RsaPrivateKey {
     let mut rng = OsRng;
     let private_key = RsaPrivateKey::new(&mut rng, 1024).expect("Failed to generate RSA key");
     let pem = private_key
@@ -109,10 +112,11 @@ fn generate_and_save_rsa_key(config: &mut Config) -> RsaPrivateKey {
         .to_string();
 
     config.rsa_private_key = Some(pem.clone());
-    std::fs::write(
+    fs::write(
         "config.json",
         serde_json::to_string_pretty(config).expect("Failed to serialize config"),
     )
+    .await
     .expect("Failed to save config");
 
     private_key

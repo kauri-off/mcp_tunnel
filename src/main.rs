@@ -103,14 +103,11 @@ mod tests {
             data: vec![0x01, 0x02, 0x03, 0x04],
         };
 
-        // Запись
         let mut writer = Cursor::new(&mut buffer);
         original.write(&mut writer).await.unwrap();
 
-        // Проверка формата: [длина, данные]
         assert_eq!(buffer, vec![0x04, 0x01, 0x02, 0x03, 0x04]);
 
-        // Чтение
         let mut reader = Cursor::new(&buffer);
         let read = RawPacket::read(&mut reader).await.unwrap();
         assert_eq!(read.data, original.data);
@@ -120,7 +117,6 @@ mod tests {
     async fn test_handshake_workflow() {
         let (mut client, mut server) = tokio::io::duplex(1024);
 
-        // Клиент отправляет рукопожатие
         let handshake = Handshake {
             protocol_version: VarInt(404),
             server_address: "localhost".to_string(),
@@ -133,29 +129,24 @@ mod tests {
             .await
             .unwrap();
 
-        // Сервер принимает пакет
         let received = RawPacket::read(&mut server)
             .await
             .unwrap()
             .as_uncompressed()
             .unwrap();
 
-        // Проверка содержимого
         let decoded = Handshake::read(&mut Cursor::new(&received.payload)).unwrap();
         assert_eq!(decoded.server_address, "localhost");
     }
 
     #[tokio::test]
     async fn test_error_handling() {
-        // Тест 1: Неполные данные при чтении RawPacket
-        let mut reader = Cursor::new(vec![0xFF]); // Неполный VarInt
+        let mut reader = Cursor::new(vec![0xFF]);
         assert!(RawPacket::read(&mut reader).await.is_err());
 
-        // Тест 2: Неполный VarInt внутри пакета
-        let invalid_raw = RawPacket { data: vec![0xFF] }; // Неполный VarInt
+        let invalid_raw = RawPacket { data: vec![0xFF] };
         let result = invalid_raw.as_uncompressed();
 
-        // Проверяем конкретный тип ошибки
         match result {
             Err(PacketError::VarIntError(VarIntError::IOError(e))) => {
                 assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
@@ -163,7 +154,6 @@ mod tests {
             other => panic!("Unexpected result: {:?}", other),
         }
 
-        // Тест 3: Пустой пакет
         let empty = RawPacket { data: vec![] };
         let result = empty.as_uncompressed();
         match result {
@@ -174,19 +164,18 @@ mod tests {
         }
     }
 
-    // Тест кодирования/декодирования для различных значений
     #[test]
     fn test_varint_roundtrip() {
         let test_cases = vec![
             0,
             1,
             2,
-            127, // Макс. 1-байтовое значение
-            128, // Миним. 2-байтовое значение
+            127,
+            128,
             255,
-            2147483647, // Максимальное i32
+            2147483647,
             -1,
-            -2147483648, // Минимальное i32
+            -2147483648,
             123456789,
         ];
 
@@ -202,10 +191,8 @@ mod tests {
         }
     }
 
-    // Тест на обработку ошибок (слишком длинное значение)
     #[test]
     fn test_varint_too_long() {
-        // Попытка прочитать 6 байт (максимум по протоколу - 5 байт)
         let data = vec![0x80, 0x80, 0x80, 0x80, 0x80, 0x00];
         let mut cursor = Cursor::new(data);
 
@@ -213,10 +200,8 @@ mod tests {
         assert!(matches!(result, Err(VarIntError::Position)));
     }
 
-    // Тест на неполные данные
     #[tokio::test]
     async fn test_incomplete_varint() {
-        // Только начало VarInt (CONTINUE_BIT установлен)
         let data = vec![0x80];
         let mut reader = BufReader::new(Cursor::new(data));
 
@@ -224,7 +209,6 @@ mod tests {
         assert!(matches!(result, Err(VarIntError::IOError(_))));
     }
 
-    // Тест асинхронного чтения/записи
     #[tokio::test]
     async fn test_async_roundtrip() {
         let values = vec![0, 1, 127, 128, 255, 12345, -12345];
@@ -241,10 +225,8 @@ mod tests {
         }
     }
 
-    // Тест на специфические кейсы из протокола Minecraft
     #[test]
     fn test_minecraft_specific_cases() {
-        // Примеры из официальной документации
         let test_cases = vec![
             (0, vec![0x00]),
             (1, vec![0x01]),
@@ -259,32 +241,26 @@ mod tests {
         ];
 
         for (value, expected_bytes) in test_cases {
-            // Тест кодирования
             let varint = VarInt(value);
             let mut buf = Vec::new();
             varint.write_sync(&mut buf).unwrap();
             assert_eq!(buf, expected_bytes, "Encoding failed for {}", value);
 
-            // Тест декодирования
             let mut cursor = Cursor::new(&expected_bytes);
             let decoded = VarInt::read_sync(&mut cursor).unwrap();
             assert_eq!(decoded.0, value, "Decoding failed for {:?}", expected_bytes);
         }
     }
 
-    // Тест на частичное чтение
     #[tokio::test]
     async fn test_partial_read() {
-        // Корректное представление для -2147483648
         let data = vec![0x80, 0x80, 0x80, 0x80, 0x78];
         let mut reader = BufReader::new(Cursor::new(data));
 
-        // Проверяем, что читается корректно
         let value = VarInt::read(&mut reader).await.unwrap();
         assert_eq!(value.0, -2147483648);
     }
 
-    // Тест на запись/чтение последовательности
     #[tokio::test]
     async fn test_sequence() {
         let values = vec![
@@ -297,12 +273,10 @@ mod tests {
 
         let mut buf = Vec::new();
 
-        // Записываем последовательность
         for varint in &values {
             varint.write(&mut buf).await.unwrap();
         }
 
-        // Читаем последовательно
         let mut reader = Cursor::new(buf);
         for expected in values {
             let decoded = VarInt::read(&mut reader).await.unwrap();
@@ -312,12 +286,7 @@ mod tests {
 
     #[test]
     fn test_varint_incomplete_data() {
-        // Проверка неполных данных
-        let test_cases = vec![
-            vec![0x80],       // Только CONTINUE_BIT
-            vec![0x80, 0x80], // Не хватает последнего байта
-            vec![0xFF, 0xFF], // Неполные данные для 3-байтового числа
-        ];
+        let test_cases = vec![vec![0x80], vec![0x80, 0x80], vec![0xFF, 0xFF]];
 
         for data in test_cases {
             let mut cursor = Cursor::new(&data);

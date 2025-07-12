@@ -8,7 +8,6 @@ use syn::{DeriveInput, LitInt, parse_macro_input};
 pub fn derive_packet(input: TokenStream) -> TokenStream {
     let mut input = parse_macro_input!(input as DeriveInput);
 
-    // Добавляем #[derive(PacketIO)] к структуре
     input
         .attrs
         .push(syn::parse_quote!(#[derive(minecraft_protocol::packet::PacketIO)]));
