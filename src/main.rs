@@ -20,7 +20,8 @@ async fn main() {
             server,
             name,
             secret,
-        } => start_client(bind, server, name, secret).await,
+            trust_new,
+        } => start_client(bind, server, name, secret, trust_new).await,
     }
 }
 

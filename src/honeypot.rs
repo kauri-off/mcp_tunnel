@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 
+use log::{debug, error, info, warn};
 use minecraft_protocol::cfb8_stream::CFB8Stream;
 use minecraft_protocol::packet::RawPacket;
 use rsa::pkcs8::EncodePublicKey;
@@ -9,53 +10,34 @@ use tokio::net::{TcpListener, TcpStream};
 
 use crate::packets::p767::{c2s, s2c};
 
-macro_rules! log_info {
-    ($($arg:tt)*) => {
-        println!("\x1b[32m[INFO]\x1b[0m {}", format!($($arg)*));
-    };
-}
-
-macro_rules! log_warn {
-    ($($arg:tt)*) => {
-        println!("\x1b[33m[WARN]\x1b[0m {}", format!($($arg)*));
-    };
-}
-
-macro_rules! log_error {
-    ($($arg:tt)*) => {
-        eprintln!("\x1b[31m[ERROR]\x1b[0m {}", format!($($arg)*));
-    };
-}
-
-macro_rules! log_debug {
-    ($($arg:tt)*) => {
-        println!("\x1b[34m[DEBUG]\x1b[0m {}", format!($($arg)*));
-    };
-}
-
 pub async fn setup_honeypot(ip: &str) {
+    // Initialize env_logger
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format_target(false)
+        .init();
+
     let mut rng = OsRng;
-    log_debug!("Generating RSA key pair...");
+    debug!("Generating RSA key pair...");
     let private_key = RsaPrivateKey::new(&mut rng, 1024).expect("failed to generate private key");
 
-    log_info!("RSA key pair generated");
+    info!("RSA key pair generated");
 
     let conn = TcpListener::bind(ip).await.unwrap();
-    log_info!("Started listening on {}", ip);
+    info!("Started listening on {}", ip);
 
     while let Ok((stream, addr)) = conn.accept().await {
         println!("\n");
-        log_info!("Accepted new connection from {}", addr);
+        info!("Accepted new connection from {}", addr);
         tokio::spawn(process_new_socket(stream, addr, private_key.clone()));
     }
 }
 
 async fn process_new_socket(mut stream: TcpStream, addr: SocketAddr, private_key: RsaPrivateKey) {
-    log_debug!("Waiting for handshake from {}", addr);
+    debug!("Waiting for handshake from {}", addr);
 
     let handshake_res = RawPacket::read(&mut stream).await;
     if handshake_res.is_err() {
-        log_error!(
+        error!(
             "Failed to read handshake from {}: {:?}",
             addr,
             handshake_res.err()
@@ -66,34 +48,32 @@ async fn process_new_socket(mut stream: TcpStream, addr: SocketAddr, private_key
     let raw_handshake = handshake_res.unwrap();
     let handshake: c2s::Handshake = raw_handshake.as_uncompressed().unwrap().convert().unwrap();
 
-    log_info!(
+    info!(
         "Handshake received from {}: protocol={}, intent={}",
-        addr,
-        handshake.protocol_version.0,
-        handshake.intent.0
+        addr, handshake.protocol_version.0, handshake.intent.0
     );
 
     if handshake.intent.0 == 1 {
-        log_info!("{} -> status request", addr);
+        info!("{} -> status request", addr);
         process_status(stream, handshake.protocol_version.0).await;
     } else if handshake.intent.0 == 2 {
-        log_info!("{} -> login request", addr);
+        info!("{} -> login request", addr);
         process_login(stream, addr, private_key).await;
     } else {
-        log_warn!("{} -> unknown intent: {}", addr, handshake.intent.0);
+        warn!("{} -> unknown intent: {}", addr, handshake.intent.0);
     }
 }
 
 async fn process_status(mut stream: TcpStream, protocol: i32) {
-    log_debug!("Processing status for protocol {}", protocol);
+    debug!("Processing status for protocol {}", protocol);
 
     while let Ok(packet) = RawPacket::read(&mut stream).await {
         let packet_id = packet.clone().as_uncompressed().unwrap().packet_id;
 
-        log_debug!("Status packet received: id={}", packet_id.0);
+        debug!("Status packet received: id={}", packet_id.0);
 
         if packet_id.0 == 0 {
-            log_info!("Sending status response");
+            info!("Sending status response");
             RawPacket::from_packetio(&s2c::StatusResponse {
                 response: json!({
                   "version": {
@@ -117,21 +97,21 @@ async fn process_status(mut stream: TcpStream, protocol: i32) {
             .await
             .unwrap();
         } else if packet_id.0 == 1 {
-            log_info!("Responding to ping request");
+            info!("Responding to ping request");
             packet.write(&mut stream).await.unwrap();
         } else {
-            log_warn!("Unknown packet id={} in status", packet_id.0);
+            warn!("Unknown packet id={} in status", packet_id.0);
         }
     }
-    log_info!("Status processing finished");
+    info!("Status processing finished");
 }
 
 async fn process_login(mut stream: TcpStream, addr: SocketAddr, private_key: RsaPrivateKey) {
-    log_debug!("Reading LoginStart packet from {}", addr);
+    debug!("Reading LoginStart packet from {}", addr);
 
     let login_start_res = RawPacket::read(&mut stream).await;
     if login_start_res.is_err() {
-        log_error!(
+        error!(
             "Failed to read LoginStart from {}: {:?}",
             addr,
             login_start_res.err()
@@ -146,7 +126,7 @@ async fn process_login(mut stream: TcpStream, addr: SocketAddr, private_key: Rsa
         .convert()
         .unwrap();
 
-    log_info!("LoginStart: username={} from {}", login_start.name, addr);
+    info!("LoginStart: username={} from {}", login_start.name, addr);
 
     let public_key = RsaPublicKey::from(&private_key);
     let public_key_der = public_key
@@ -155,7 +135,7 @@ async fn process_login(mut stream: TcpStream, addr: SocketAddr, private_key: Rsa
 
     // Send EncryptionRequest
     let verify_token: [u8; 4] = rand::random();
-    log_debug!("Generated verify token: {:?}", verify_token);
+    debug!("Generated verify token: {:?}", verify_token);
 
     let encryption_request = s2c::EncryptionRequest {
         server_id: "".to_string(),
@@ -164,7 +144,7 @@ async fn process_login(mut stream: TcpStream, addr: SocketAddr, private_key: Rsa
         should_authenticate: false,
     };
 
-    log_info!("Sending EncryptionRequest to {}", addr);
+    info!("Sending EncryptionRequest to {}", addr);
     RawPacket::from_packetio(&encryption_request)
         .unwrap()
         .write(&mut stream)
@@ -172,7 +152,7 @@ async fn process_login(mut stream: TcpStream, addr: SocketAddr, private_key: Rsa
         .unwrap();
 
     // Read EncryptionResponse
-    log_debug!("Waiting for EncryptionResponse from {}", addr);
+    debug!("Waiting for EncryptionResponse from {}", addr);
     let encrypted_response: c2s::EncryptionResponse = RawPacket::read(&mut stream)
         .await
         .unwrap()
@@ -181,7 +161,7 @@ async fn process_login(mut stream: TcpStream, addr: SocketAddr, private_key: Rsa
         .convert()
         .unwrap();
 
-    log_info!("Received EncryptionResponse from {}", addr);
+    info!("Received EncryptionResponse from {}", addr);
 
     // Verify EncryptionResponse
     let shared_secret_vec = private_key
@@ -192,11 +172,11 @@ async fn process_login(mut stream: TcpStream, addr: SocketAddr, private_key: Rsa
         .unwrap();
 
     if verify_token_resp != verify_token {
-        log_error!("Verify token mismatch for {}", addr);
+        error!("Verify token mismatch for {}", addr);
         return;
     }
 
-    log_info!("Verify token validated for {}", addr);
+    info!("Verify token validated for {}", addr);
 
     let shared_secret: &[u8; 16] = shared_secret_vec
         .as_slice()
@@ -204,10 +184,10 @@ async fn process_login(mut stream: TcpStream, addr: SocketAddr, private_key: Rsa
         .expect("Vec length is not 16");
 
     let mut encrypted_stream = CFB8Stream::new_from_tcp(stream, shared_secret).unwrap();
-    log_info!("Encrypted stream established with {}", addr);
+    info!("Encrypted stream established with {}", addr);
 
     // Disconnect player
-    log_info!("Disconnecting player {} ({})", login_start.name, addr);
+    info!("Disconnecting player {} ({})", login_start.name, addr);
 
     RawPacket::from_packetio(&s2c::LoginDisconnect {
         reason: json!({
@@ -220,5 +200,5 @@ async fn process_login(mut stream: TcpStream, addr: SocketAddr, private_key: Rsa
     .await
     .unwrap();
 
-    log_info!("Player {} disconnected", login_start.name);
+    info!("Player {} disconnected", login_start.name);
 }

@@ -20,5 +20,7 @@ pub enum Cli {
         name: String,
         #[arg(long)]
         secret: String,
+        #[arg(long)]
+        trust_new: bool,
     },
 }

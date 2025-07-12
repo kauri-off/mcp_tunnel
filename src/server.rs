@@ -1,52 +1,95 @@
 use async_encrypted_stream::{encrypted_stream, ReadHalf, WriteHalf};
 use chacha20poly1305::aead::stream::{DecryptorLE31, EncryptorLE31};
 use chacha20poly1305::XChaCha20Poly1305;
+use log::{error, info, warn};
 use mcp_tunnel::fingerprint_md5;
 use minecraft_protocol::cfb8_stream::CFB8Stream;
 use minecraft_protocol::packet::RawPacket;
-use rsa::pkcs8::EncodePublicKey;
+use rsa::pkcs1::{DecodeRsaPrivateKey, EncodeRsaPrivateKey};
+use rsa::pkcs8::{EncodePublicKey, LineEnding};
 use rsa::{rand_core::OsRng, RsaPrivateKey, RsaPublicKey};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::net::SocketAddr;
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
-use tokio::select;
+use tokio::{fs, select};
 
 use crate::packets::p767::{c2s, s2c};
 
-#[derive(Clone)]
+#[derive(Clone, Deserialize, Serialize)]
 struct Config {
     users: Vec<User>,
+    rsa_private_key: Option<String>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Deserialize, Serialize)]
 struct User {
     name: String,
     secret: String,
 }
 
 pub async fn start_server(bind_addr: String, proxy_addr: String) {
-    // TODO: Get config from file
-    let config = Config {
-        users: vec![User {
-            name: "test".to_string(),
-            secret: "7c6e5e6386f7458f7596da1f8ec50ae7".to_string(),
-        }],
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    info!("Starting server...");
+
+    // Load config from file
+    let mut config: Config = match fs::read_to_string("config.json").await {
+        Ok(contents) => serde_json::from_str(&contents).unwrap_or_else(|_| {
+            error!("Failed to parse config.json, using default config");
+            Config {
+                users: vec![],
+                rsa_private_key: None,
+            }
+        }),
+        Err(_) => {
+            warn!("config.json not found, creating default config");
+            let default_config = Config {
+                users: vec![User {
+                    name: "test".to_string(),
+                    secret: "7c6e5e6386f7458f7596da1f8ec50ae7".to_string(),
+                }],
+                rsa_private_key: None,
+            };
+            fs::write(
+                "config.json",
+                serde_json::to_string_pretty(&default_config).unwrap(),
+            )
+            .await
+            .expect("Failed to write default config");
+            default_config
+        }
     };
 
-    assert_eq!(hex::decode(&config.users[0].secret).unwrap().len(), 16);
+    // Validate user secrets
+    for user in &config.users {
+        if hex::decode(&user.secret).map(|s| s.len()).unwrap_or(0) != 16 {
+            error!(
+                "Invalid secret length for user {}. Must be 16-byte hex string",
+                user.name
+            );
+        }
+    }
 
-    // TODO: Get rsa key from config
-    let mut rng = OsRng;
-    let private_key = RsaPrivateKey::new(&mut rng, 1024).unwrap();
-    println!(
-        "{}",
-        fingerprint_md5(&RsaPublicKey::from(&private_key)).unwrap()
+    // Load or generate RSA key
+    let private_key = match config.rsa_private_key {
+        Some(ref pem) => RsaPrivateKey::from_pkcs1_pem(pem).unwrap_or_else(|_| {
+            error!("Invalid RSA private key in config, generating new one");
+            generate_and_save_rsa_key(&mut config)
+        }),
+        None => generate_and_save_rsa_key(&mut config),
+    };
+
+    let public_key = RsaPublicKey::from(&private_key);
+    info!(
+        "Server fingerprint: {}",
+        fingerprint_md5(&public_key).unwrap()
     );
 
     let tcp_listener = TcpListener::bind(&bind_addr).await.unwrap();
-    // TODO: Logging
+    info!("Listening on {}", bind_addr);
 
     while let Ok((stream, addr)) = tcp_listener.accept().await {
+        info!("New connection from {}", addr);
         tokio::spawn(process_new_stream(
             stream,
             addr,
@@ -55,6 +98,24 @@ pub async fn start_server(bind_addr: String, proxy_addr: String) {
             config.clone(),
         ));
     }
+}
+
+fn generate_and_save_rsa_key(config: &mut Config) -> RsaPrivateKey {
+    let mut rng = OsRng;
+    let private_key = RsaPrivateKey::new(&mut rng, 1024).expect("Failed to generate RSA key");
+    let pem = private_key
+        .to_pkcs1_pem(LineEnding::LF)
+        .expect("Failed to encode RSA key")
+        .to_string();
+
+    config.rsa_private_key = Some(pem.clone());
+    std::fs::write(
+        "config.json",
+        serde_json::to_string_pretty(config).expect("Failed to serialize config"),
+    )
+    .expect("Failed to save config");
+
+    private_key
 }
 
 async fn process_new_stream(
@@ -88,6 +149,8 @@ async fn process_login(
         .as_uncompressed()?
         .convert()?;
 
+    info!("Login attempt from: {}", login_start.name);
+
     let public_key = RsaPublicKey::from(&private_key);
     let public_key_der = public_key.to_public_key_der()?;
 
@@ -119,8 +182,8 @@ async fn process_login(
         return Ok(());
     }
 
-    if !verify_secret(&login_start.name, &shared_secret, &verify_token, &config) {
-        // TODO: Logging
+    if let Err(reason) = verify_secret(&login_start.name, &shared_secret, &verify_token, &config) {
+        warn!("Authentication failed for {}: {}", login_start.name, reason);
         let shared_secret: &[u8; 16] = shared_secret.as_slice().try_into()?;
         let mut encrypted_stream = CFB8Stream::new_from_tcp(client_stream, shared_secret)?;
 
@@ -184,18 +247,26 @@ fn verify_secret(
     shared_secret: &[u8],
     verify_token: &[u8; 4],
     config: &Config,
-) -> bool {
+) -> Result<(), &'static str> {
     if shared_secret.len() != 20 {
-        return false;
+        return Err("Invalid shared secret length");
     }
     if &shared_secret[..4] != verify_token {
-        return false;
+        return Err("Token mismatch");
     }
 
-    match config.users.iter().find(|t| t.name.as_str().eq(username)) {
-        Some(user) => user.secret.eq(&hex::encode(&shared_secret[4..])),
-        None => false,
-    }
+    config
+        .users
+        .iter()
+        .find(|u| u.name == username)
+        .ok_or("User not found")
+        .and_then(|user| {
+            if user.secret == hex::encode(&shared_secret[4..]) {
+                Ok(())
+            } else {
+                Err("Secret mismatch")
+            }
+        })
 }
 
 async fn process_status(mut stream: TcpStream, _addr: SocketAddr) -> anyhow::Result<()> {

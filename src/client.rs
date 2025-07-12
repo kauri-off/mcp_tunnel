@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::{fs, io::Write, net::SocketAddr, path::Path};
 
 use async_encrypted_stream::{encrypted_stream, ReadHalf, WriteHalf};
 use chacha20poly1305::{
@@ -16,7 +16,15 @@ use tokio::{
 
 use crate::packets::p767::{c2s, s2c};
 
-pub async fn start_client(bind_addr: String, server_addr: String, name: String, secret: String) {
+const KNOWN_HOSTS_FILE: &str = "known_hosts";
+
+pub async fn start_client(
+    bind_addr: String,
+    server_addr: String,
+    name: String,
+    secret: String,
+    trust_new: bool,
+) {
     let listener = TcpListener::bind(&bind_addr).await.unwrap();
 
     while let Ok((stream, _addr)) = listener.accept().await {
@@ -25,6 +33,7 @@ pub async fn start_client(bind_addr: String, server_addr: String, name: String, 
             server_addr.clone(),
             name.clone(),
             secret.clone(),
+            trust_new,
         ));
     }
 }
@@ -34,6 +43,7 @@ async fn process_socket(
     server_addr: String,
     name: String,
     secret: String,
+    trust_new: bool,
 ) -> anyhow::Result<()> {
     let addr: SocketAddr = server_addr.parse()?;
     let mut remote_stream = TcpSocket::new_v4()?.connect(addr.clone()).await?;
@@ -65,8 +75,22 @@ async fn process_socket(
 
     let public_key = RsaPublicKey::from_public_key_der(&encryption_request.public_key)?;
 
-    // TODO: Add to known_hosts
-    println!("{}", fingerprint_md5(&public_key)?);
+    let fingerprint = fingerprint_md5(&public_key)?;
+
+    // Verify or record host key
+    match check_known_host(&server_addr, &fingerprint) {
+        Ok(_) => {} // Known host, proceed
+        Err(_) if trust_new => {
+            add_known_host(&server_addr, &fingerprint)?;
+            println!("Added new host key for {}", server_addr);
+        }
+        Err(e) => {
+            eprintln!("Host key verification failed: {}", e);
+            eprintln!("Fingerprint: {}", fingerprint);
+            eprintln!("To trust this key, run with --trust-new");
+            return Err(e);
+        }
+    }
 
     let shared_secret: [u8; 16] = hex::decode(&secret)?
         .try_into()
@@ -135,4 +159,40 @@ fn calc_hash_u128(name: &str) -> u128 {
     bytes.copy_from_slice(&digest[..16]);
 
     u128::from_be_bytes(bytes)
+}
+fn get_known_hosts_path() -> String {
+    std::env::current_dir()
+        .unwrap()
+        .join(KNOWN_HOSTS_FILE)
+        .to_str()
+        .unwrap()
+        .to_string()
+}
+
+fn check_known_host(server_addr: &str, fingerprint: &str) -> anyhow::Result<()> {
+    let path = get_known_hosts_path();
+    if !Path::new(&path).exists() {
+        return Err(anyhow::anyhow!("Known hosts file not found"));
+    }
+
+    let contents = fs::read_to_string(&path)?;
+    for line in contents.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 && parts[0] == server_addr && parts[1] == fingerprint {
+            return Ok(());
+        }
+    }
+
+    Err(anyhow::anyhow!("Host key verification failed"))
+}
+
+fn add_known_host(server_addr: &str, fingerprint: &str) -> anyhow::Result<()> {
+    let path = get_known_hosts_path();
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+
+    writeln!(file, "{} {}", server_addr, fingerprint)?;
+    Ok(())
 }
