@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, path::Path};
+use std::{io::Write, net::SocketAddr, path::Path};
 
 use anyhow::anyhow;
 use async_encrypted_stream::{encrypted_stream, ReadHalf, WriteHalf};
@@ -85,13 +85,18 @@ async fn process_socket(
 
     // Verify or record host key
     match check_known_host(&server_addr, &fingerprint).await {
-        Ok(_) => {} // Known host, proceed
+        Ok(_) => {}
         Err(_) if trust_new => {
-            add_known_host(&server_addr, &fingerprint).await?;
-            println!("Added new host key for {}", server_addr);
+            if prompt_trust_server(&server_addr, &fingerprint).await? {
+                add_known_host(&server_addr, &fingerprint).await?;
+                println!("✅ Added new host key for {}", server_addr);
+            } else {
+                eprintln!("❌ Connection aborted: server key not trusted.");
+                return Err(anyhow::anyhow!("Server key not trusted by user"));
+            }
         }
         Err(e) => {
-            eprintln!("Host key verification failed: {}", e);
+            eprintln!("❌ Host key verification failed: {}", e);
             eprintln!("Fingerprint: {}", fingerprint);
             eprintln!("To trust this key, run with --trust-new");
             return Err(e);
@@ -207,4 +212,22 @@ pub async fn add_known_host(server_addr: &str, fingerprint: &str) -> anyhow::Res
     file.write_all(format!("{} {}\n", server_addr, fingerprint).as_bytes())
         .await?;
     Ok(())
+}
+
+async fn prompt_trust_server(server_addr: &str, fingerprint: &str) -> anyhow::Result<bool> {
+    println!("⚠️  Warning: connecting to a new server at {}", server_addr);
+    println!("Server RSA fingerprint (MD5): {}", fingerprint);
+    print!("Do you want to trust this key and add it to known_hosts? (yes/no): ");
+    std::io::stdout().flush()?;
+
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    let input = input.trim().to_lowercase();
+
+    if input == "yes" || input == "y" {
+        Ok(true)
+    } else {
+        println!("❌ Server not trusted. Aborting connection.");
+        Ok(false)
+    }
 }

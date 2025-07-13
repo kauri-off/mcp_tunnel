@@ -12,13 +12,13 @@ use crate::packets::p767::{c2s, s2c};
 
 pub async fn setup_honeypot(ip: &str) {
     // Initialize env_logger
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
         .format_target(false)
         .init();
 
     let mut rng = OsRng;
     debug!("Generating RSA key pair...");
-    let private_key = RsaPrivateKey::new(&mut rng, 1024).expect("failed to generate private key");
+    let private_key = RsaPrivateKey::new(&mut rng, 3072).expect("failed to generate private key");
 
     info!("RSA key pair generated");
 

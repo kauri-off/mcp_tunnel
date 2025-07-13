@@ -105,7 +105,7 @@ pub async fn start_server(bind_addr: String, proxy_addr: String) {
 
 async fn generate_and_save_rsa_key(config: &mut Config) -> RsaPrivateKey {
     let mut rng = OsRng;
-    let private_key = RsaPrivateKey::new(&mut rng, 1024).expect("Failed to generate RSA key");
+    let private_key = RsaPrivateKey::new(&mut rng, 3072).expect("Failed to generate RSA key");
     let pem = private_key
         .to_pkcs1_pem(LineEnding::LF)
         .expect("Failed to encode RSA key")
