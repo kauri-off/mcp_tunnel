@@ -1,48 +1,26 @@
 # 🛡️ MCP_Tunnel - Minecraft Protocol Tunnel
 
-MCP_Tunnel is a lightweight proxy system that tunnels traffic through an encrypted channel disguised as Minecraft protocol traffic. It allows you to bypass firewalls and deep packet inspection (DPI) by making your traffic appear like normal Minecraft client-server connections.
+MCP_Tunnel is a lightweight proxy system that tunnels traffic through an encrypted channel disguised as Minecraft protocol traffic. It bypasses firewalls and deep packet inspection (DPI) by making traffic appear as normal Minecraft client-server connections.
 
 # 🔧 How It Works
 
-The system consists of three components working together:
+The system tunnels traffic through three components:
 
-```
-Client Application (Browser, etc.)
-↓
-MCP_Tunnel Client (local proxy)
-↓
-Minecraft Server (disguised MCP_Tunnel Server)
-↓
-Actual Proxy Server (Tinyproxy, etc.)
-↓
-Internet
+```text
+Client Application → MCP_Tunnel Client → Minecraft Server (disguised MCP_Tunnel Server) → Actual Proxy Server → Internet
 ```
 
-1. **Client**: Runs locally, accepts connections from applications
+1. **Client Application**: Browser or other internet-enabled app
 
-2. **Server**: Disguised as a Minecraft server, handles encrypted tunneling
+2. **MCP_Tunnel Client**: Local proxy that encrypts traffic as Minecraft protocol
 
-3. **Honeypot**: Optional fake Minecraft server for monitoring/logging
+3. **MCP_Tunnel Server**: Disguised as Minecraft server, handles decryption and forwarding
 
-# 🚀 Getting Started
+4. **Actual Proxy**: Tinyproxy or similar HTTP proxy server
 
-## Prerequisites
+# 🧩 Key Components
 
-- Rust (install via rustup)
-
-- Tinyproxy or similar HTTP proxy (sudo apt install tinyproxy)
-
-## Installation
-
-```bash
-git clone https://github.com/kauri-off/mcp_tunnel.git
-cd mcp_tunnel
-cargo build --release
-```
-
-# 🧩 Components
-
-1. Honeypot (Fake Minecraft Server)
+**1. Honeypot (Fake Minecraft Server)**
 
 ```bash
 cargo run -- honeypot 0.0.0.0:25565
@@ -54,13 +32,11 @@ cargo run -- honeypot 0.0.0.0:25565
 
 - Disconnects players after collecting information
 
-2. Server (Proxy Gateway)
+**2. Server (Proxy Gateway)**
 
 ```bash
 cargo run -- server --bind 0.0.0.0:25565 --proxy 127.0.0.1:8888
 ```
-
-- Requires config.json (auto-generated on first run)
 
 - Handles Minecraft protocol handshake
 
@@ -68,26 +44,37 @@ cargo run -- server --bind 0.0.0.0:25565 --proxy 127.0.0.1:8888
 
 - Forwards traffic to actual proxy server
 
-3. Client (Local Proxy)
+**3. Client (Local Proxy)**
 
 ```bash
-cargo run -- client \
---bind 127.0.0.1:1080 \
---server 123.45.67.89:25565 \
---name your-username \
---secret your-secret-key \
---trust-new
+cargo run -- client --bind 127.0.0.1:1080 --server 123.45.67.89:25565 --name your-username --secret your-secret-key
 ```
 
-- Creates local SOCKS5 proxy
+- Creates an encrypted tunnel
 
 - Encrypts traffic as Minecraft protocol
 
 - Connects to "Minecraft" server (actually MCP_Tunnel Server)
 
-# 🔐 Configuration
+# 🚀 Getting Started
 
-## Server Configuration (config.json)
+## Prerequisites
+
+- Rust (install via rustup)
+
+- Tinyproxy: sudo apt install tinyproxy
+
+## Installation
+
+```bash
+git clone https://github.com/kauri-off/mcp_tunnel.git
+cd mcp_tunnel
+cargo build --release
+```
+
+## Configuration
+
+**Server config.json (auto-generated):**
 
 ```json
 {
@@ -101,30 +88,25 @@ cargo run -- client \
 }
 ```
 
-## Generating Secrets
-
-Use 16-byte random hex strings:
+**Generate Secrets:**
 
 ```bash
-openssl rand -hex 16
-# Example: 7c6e5e6386f7458f7596da1f8ec50ae7
+openssl rand -hex 16 # Example output: 7c6e5e6386f7458f7596da1f8ec50ae7
 ```
 
-## Trust Model
+# 🔒 Security Model
 
-- First connection requires --trust-new flag
+- First connection requires manual fingerprint verification
 
-- Server fingerprint stored in known_hosts
+- Server fingerprints stored in known_hosts file
 
 - Subsequent connections verify against known fingerprint
 
-# 🧪 Testing Your Setup
+- Warns on changed fingerprints (potential MITM attack)
 
-1. Start Tinyproxy:
+# 🧪 Testing Setup
 
-```bash
-sudo systemctl start tinyproxy
-```
+1. Start Tinyproxy: `sudo systemctl start tinyproxy`
 
 2. Start MCP_Tunnel Server:
 
@@ -135,30 +117,38 @@ cargo run --release -- server --bind 0.0.0.0:25565 --proxy 127.0.0.1:8888
 3. Start MCP_Tunnel Client:
 
 ```bash
-cargo run --release -- client \
- --bind 127.0.0.1:1080 \
+cargo run --release -- client --bind 127.0.0.1:1080 \
  --server 123.45.67.89:25565 \
  --name test \
- --secret 7c6e5e6386f7458f7596da1f8ec50ae7 \
- --trust-new
+ --secret 7c6e5e6386f7458f7596da1f8ec50ae7
 ```
 
-4. Configure applications to use http://127.0.0.1:1080
+4. Configure applications to use `http://127.0.0.1:1080`
 
-# 🛠️ Technical Details
+# ⚙️ Technical Details
 
-## Encryption Layers
+## Encryption Layers:
 
-- Initial Handshake: RSA-1024 key exchange
+- RSA-1024 key exchange
 
-- CFB8 Stream: AES-128-CFB8 encryption
+- AES-128-CFB8 stream encryption
 
-- ChaCha20-Poly1305: Final encryption layer
+- ChaCha20-Poly1305 final encryption
 
-## Protocol Support
+## Protocol Support:
 
 - Minecraft 1.21.1 (Protocol 767)
 
-- Full encryption and compression support
+- Full encryption
 
 - Proxy protocol tunneling
+
+# 🌐 Use Cases
+
+- Bypass restrictive network firewalls
+
+- Evade DPI detection in censored regions
+
+- Secure public Wi-Fi connections
+
+- Monitor suspicious connection attempts (honeypot mode)
