@@ -1,4 +1,4 @@
-use std::{io::Write, net::SocketAddr, path::Path};
+use std::{collections::HashMap, io::Write, net::SocketAddr, path::Path, sync::Arc};
 
 use anyhow::anyhow;
 use async_encrypted_stream::{encrypted_stream, ReadHalf, WriteHalf};
@@ -8,12 +8,10 @@ use chacha20poly1305::{
 };
 use mcp_tunnel::fingerprint_md5;
 use minecraft_protocol::{cfb8_stream::CFB8Stream, packet::RawPacket, varint::VarInt};
-use once_cell::sync::Lazy;
 use rsa::{pkcs8::DecodePublicKey, rand_core::OsRng, RsaPublicKey};
 use sha1::{Digest, Sha1};
 use tokio::{
     fs,
-    io::AsyncWriteExt,
     net::{TcpListener, TcpSocket, TcpStream},
     select,
     sync::Mutex,
@@ -22,15 +20,40 @@ use tokio::{
 use crate::packets::p767::{c2s, s2c};
 
 const KNOWN_HOSTS_FILE: &str = "known_hosts";
-static KNOWN_HOSTS_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
-pub async fn start_client(
-    bind_addr: String,
-    server_addr: String,
-    name: String,
-    secret: String,
-    trust_new: bool,
-) {
+pub struct AppState {
+    known_hosts: Mutex<HashMap<String, String>>, // [address] = fingerprint
+    known_hosts_path: String,
+}
+
+impl AppState {
+    pub async fn new() -> anyhow::Result<Arc<Self>> {
+        let known_hosts_path = std::env::current_dir()?
+            .join(KNOWN_HOSTS_FILE)
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let mut known_hosts = HashMap::new();
+        if Path::new(&known_hosts_path).exists() {
+            let contents = fs::read_to_string(&known_hosts_path).await?;
+            for line in contents.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    known_hosts.insert(parts[0].to_string(), parts[1].to_string());
+                }
+            }
+        }
+
+        Ok(Arc::new(Self {
+            known_hosts: Mutex::new(known_hosts),
+            known_hosts_path,
+        }))
+    }
+}
+
+pub async fn start_client(bind_addr: String, server_addr: String, name: String, secret: String) {
+    let state = AppState::new().await.unwrap();
     let listener = TcpListener::bind(&bind_addr).await.unwrap();
 
     while let Ok((stream, _addr)) = listener.accept().await {
@@ -39,7 +62,7 @@ pub async fn start_client(
             server_addr.clone(),
             name.clone(),
             secret.clone(),
-            trust_new,
+            state.clone(),
         ));
     }
 }
@@ -49,7 +72,7 @@ async fn process_socket(
     server_addr: String,
     name: String,
     secret: String,
-    trust_new: bool,
+    state: Arc<AppState>,
 ) -> anyhow::Result<()> {
     let addr: SocketAddr = server_addr.parse()?;
     let mut remote_stream = TcpSocket::new_v4()?.connect(addr.clone()).await?;
@@ -84,22 +107,50 @@ async fn process_socket(
     let fingerprint = fingerprint_md5(&public_key)?;
 
     // Verify or record host key
-    match check_known_host(&server_addr, &fingerprint).await {
-        Ok(_) => {}
-        Err(_) if trust_new => {
-            if prompt_trust_server(&server_addr, &fingerprint).await? {
-                add_known_host(&server_addr, &fingerprint).await?;
-                println!("✅ Added new host key for {}", server_addr);
+    match check_known_host(&state, &server_addr, &fingerprint).await {
+        Ok(()) => {}
+        Err(stored_fingerprint) => {
+            let (is_new_server, warning_message) = if stored_fingerprint.is_empty() {
+                (
+                    true,
+                    format!(
+                        "\n⚠️  The authenticity of host '{}' can't be established.\n\
+                     Server fingerprint: {}\n\
+                     Are you sure you want to continue connecting? (yes/no): ",
+                        server_addr, fingerprint
+                    ),
+                )
             } else {
-                eprintln!("❌ Connection aborted: server key not trusted.");
-                return Err(anyhow::anyhow!("Server key not trusted by user"));
+                (
+                    false,
+                    format!(
+                        "\n⚠️  WARNING: SERVER IDENTIFICATION HAS CHANGED! ⚠️\n\
+                     This could indicate a man-in-the-middle attack!\n\
+                     Server: {}\n\
+                     Previous fingerprint: {}\n\
+                     Current fingerprint:  {}\n\n\
+                     Are you sure you want to continue connecting? (yes/no): ",
+                        server_addr, stored_fingerprint, fingerprint
+                    ),
+                )
+            };
+
+            print!("{}", warning_message);
+            std::io::stdout().flush()?;
+
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+
+            if input.trim().eq_ignore_ascii_case("yes") {
+                add_known_host(&state, &server_addr, &fingerprint).await?;
+                println!(
+                    "✅ Host key {} for {}",
+                    if is_new_server { "added" } else { "updated" },
+                    server_addr
+                );
+            } else {
+                return Err(anyhow!("Host key verification failed for {}", server_addr));
             }
-        }
-        Err(e) => {
-            eprintln!("❌ Host key verification failed: {}", e);
-            eprintln!("Fingerprint: {}", fingerprint);
-            eprintln!("To trust this key, run with --trust-new");
-            return Err(e);
         }
     }
 
@@ -171,63 +222,34 @@ fn calc_hash_u128(name: &str) -> u128 {
 
     u128::from_be_bytes(bytes)
 }
-fn get_known_hosts_path() -> String {
-    std::env::current_dir()
-        .unwrap()
-        .join(KNOWN_HOSTS_FILE)
-        .to_str()
-        .unwrap()
-        .to_string()
+
+async fn check_known_host(
+    state: &Arc<AppState>,
+    server_addr: &str,
+    fingerprint: &str,
+) -> Result<(), String> {
+    let known_hosts = state.known_hosts.lock().await;
+    match known_hosts.get(server_addr) {
+        Some(stored) if stored == fingerprint => Ok(()),
+        Some(stored) => Err(stored.clone()),
+        None => Err(String::new()),
+    }
 }
 
-pub async fn check_known_host(server_addr: &str, fingerprint: &str) -> anyhow::Result<()> {
-    let _lock = KNOWN_HOSTS_LOCK.lock().await;
+async fn add_known_host(
+    state: &Arc<AppState>,
+    server_addr: &str,
+    fingerprint: &str,
+) -> anyhow::Result<()> {
+    let mut known_hosts = state.known_hosts.lock().await;
 
-    let path = get_known_hosts_path();
-    if !Path::new(&path).exists() {
-        return Err(anyhow!("Known hosts file not found"));
+    known_hosts.insert(server_addr.to_string(), fingerprint.to_string());
+
+    let mut contents = String::new();
+    for (addr, fp) in known_hosts.iter() {
+        contents.push_str(&format!("{} {}\n", addr, fp));
     }
 
-    let contents = fs::read_to_string(&path).await?;
-    for line in contents.lines() {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 2 && parts[0] == server_addr && parts[1] == fingerprint {
-            return Ok(());
-        }
-    }
-
-    Err(anyhow!("Host key verification failed"))
-}
-
-pub async fn add_known_host(server_addr: &str, fingerprint: &str) -> anyhow::Result<()> {
-    let _lock = KNOWN_HOSTS_LOCK.lock().await;
-
-    let path = get_known_hosts_path();
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .await?;
-
-    file.write_all(format!("{} {}\n", server_addr, fingerprint).as_bytes())
-        .await?;
+    fs::write(&state.known_hosts_path, contents).await?;
     Ok(())
-}
-
-async fn prompt_trust_server(server_addr: &str, fingerprint: &str) -> anyhow::Result<bool> {
-    println!("⚠️  Warning: connecting to a new server at {}", server_addr);
-    println!("Server RSA fingerprint (MD5): {}", fingerprint);
-    print!("Do you want to trust this key and add it to known_hosts? (yes/no): ");
-    std::io::stdout().flush()?;
-
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
-    let input = input.trim().to_lowercase();
-
-    if input == "yes" || input == "y" {
-        Ok(true)
-    } else {
-        println!("❌ Server not trusted. Aborting connection.");
-        Ok(false)
-    }
 }
