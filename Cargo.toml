@@ -22,3 +22,6 @@ md5 = "0.8.0"
 serde = { version = "1.0.219", features = ["derive"] }
 env_logger = "0.11.8"
 log = "0.4.27"
+
+[target.'cfg(windows)'.dependencies]
+openssl = { version = "0.10.73", features = ["vendored"] }
