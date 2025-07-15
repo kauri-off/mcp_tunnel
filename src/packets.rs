@@ -1,8 +1,8 @@
 pub mod p767 {
-    use minecraft_protocol::varint::VarInt;
-    use minecraft_protocol_derive::Packet;
+    use minecraft_protocol::{Packet, varint::VarInt};
 
     pub mod c2s {
+
         use super::*;
         // ----------- HANDSHAKING -----------
         #[derive(Packet, Debug)]
